@@ -20,6 +20,7 @@ export interface StepResult {
   blobWorld: Vec3; // cached for the renderer + feel layer
   flowSpeed: number; // signed along-edge flow speed (for HUD / current viz)
   upstreamProgress: number; // +1 fully beating the current, -1 fully losing
+  blobVel: Vec3; // instantaneous world velocity; sim.step smooths it for the steadiness gate
 }
 
 export function integrate(
@@ -103,10 +104,12 @@ export function integrate(
   const upstreamProgress = clamp(-Math.sign(flowSpeed) * (vAlong / flowMag), -1, 1);
 
   return {
-    blob: { edgeId: curEdge.id, s, offset: { x: ox, y: oy }, pullMag },
+    // chargeLevel is owned by the delivery pass (sim.step), not the physics — pass it through.
+    blob: { edgeId: curEdge.id, s, offset: { x: ox, y: oy }, pullMag, chargeLevel: blob.chargeLevel },
     blobWorld,
     flowSpeed,
     upstreamProgress,
+    blobVel: v,
   };
 }
 

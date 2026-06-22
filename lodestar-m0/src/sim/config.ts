@@ -39,6 +39,23 @@ export interface SimConfig {
   grabTau: number; // s. one-pole lag on APPLIED pull — authority ramps in (~120ms) so
   // the magnet CATCHES the blob instead of teleporting it. The "grab".
 
+  // --- delivery (charge & release — the ending; see Gameplay-Design §3) ---
+  // The lesson-as-act: hold the blob STEADY on the tumour to charge it; at full charge
+  // the drug auto-fires (clean delivery). Break the hold above a threshold while you're
+  // OFF the tumour and the heat dumps where you are — that's collateral. "Heat, once
+  // charged, has to go somewhere." No release button; the verb itself delivers.
+  releaseRadius: number; // world dist to the target inside which you count as "on it".
+  holdThreshold: number; // world units/s. charge accrues only while smoothed drift is under
+  // this (i.e. while you're actively countering the current — the verb reused as the climax).
+  steadyTau: number; // s. smoothing window on blob velocity for the steadiness gate. Lets
+  // "vibrating in place under a tight magnet" read as HELD (net drift ≈ 0) instead of fast —
+  // the gate measures where you're going, not the jitter of holding there.
+  chargeTime: number; // s of clean hold to reach full charge and auto-fire.
+  chargeBleed: number; // charge/s lost when you drift off-target with too little to dump.
+  collateralThreshold: number; // charge above which breaking proximity DUMPS (collateral)
+  // instead of harmlessly bleeding — the heat is already committed.
+  collateralWeight: number; // k in cleanliness = targetDose/(targetDose + k·healthyDose).
+
   // --- integration ---
   fixedDt: number; // logical timestep (s). 1/120 = 120 Hz logical rate.
 }
@@ -63,6 +80,17 @@ export const DEFAULT_CONFIG: SimConfig = {
   controlDeadzone: 0.35, // smaller: kill the dead band where the blob glues to the cursor.
   maxPull: 1.5,
   grabTau: 0.12,
+
+  // Delivery: a ~1.6s clean hold in a tight pocket. releaseRadius is deliberately small
+  // so staying "on the tumour" against even the calm distal current takes active holding,
+  // not parking — the verb earns the release. Final values come from the Gate-0 sweep.
+  releaseRadius: 0.7,
+  holdThreshold: 0.3,
+  steadyTau: 0.15,
+  chargeTime: 1.6,
+  chargeBleed: 1.0,
+  collateralThreshold: 0.3,
+  collateralWeight: 2.0,
 
   fixedDt: 1 / 120,
 };

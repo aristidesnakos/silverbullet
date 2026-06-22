@@ -9,6 +9,7 @@ import * as THREE from 'three';
 import { engine, useHud } from './engine';
 import { step } from '../sim/sim';
 import { pulseFactor } from '../sim/flow';
+import { cleanliness } from '../sim/delivery';
 import { DEFAULT_CONFIG } from '../sim/config';
 import { breastTumourScenario } from '../scenarios/breastTumour';
 import { strain } from '../feel/haptics';
@@ -28,6 +29,14 @@ export function GameLoop() {
   const cellsRef = useRef<THREE.InstancedMesh>(null!);
   const ghostRef = useRef<THREE.Line>(null!);
   const targetRef = useRef<THREE.Mesh>(null!);
+  // --- the ending: charge halo + one-shot delivery/collateral effects ---
+  const chargeRingRef = useRef<THREE.Mesh>(null!);
+  const bloomRef = useRef<THREE.Mesh>(null!); // soft clean-release pulse
+  const puffRef = useRef<THREE.Mesh>(null!); // dull collateral dump
+  const seenSeq = useRef(0); // edge-trigger sim.eventSeq so each event fires once
+  const bloomT = useRef(-1); // local anim clock (s); <0 = idle
+  const puffT = useRef(-1);
+  const puffNearHealthy = useRef(false);
 
   // one centerline curve per edge — cells drift along these.
   const curves = useMemo(() => {
@@ -127,6 +136,90 @@ export function GameLoop() {
     }
     prevBlob.current.copy(blobV);
 
+    // --- charge ring: the drug "heat" building as you hold the tumour. Tightens,
+    //     brightens, and pulses as it fills; billboarded so it reads as a halo. ---
+    if (chargeRingRef.current) {
+      const charge = sim.blob.chargeLevel;
+      const mat = chargeRingRef.current.material as THREE.MeshStandardMaterial;
+      if (charge > 0.01) {
+        chargeRingRef.current.visible = true;
+        chargeRingRef.current.position.copy(blobV);
+        chargeRingRef.current.quaternion.copy(camera.quaternion); // face camera
+        const pulse = 1 + 0.12 * Math.sin(sim.tSec * 9) * charge;
+        chargeRingRef.current.scale.setScalar((0.6 + 0.7 * charge) * pulse);
+        mat.opacity = 0.2 + 0.7 * charge;
+        mat.emissiveIntensity = 0.5 + 2.2 * charge;
+      } else {
+        chargeRingRef.current.visible = false;
+      }
+    }
+
+    // --- one-shot delivery events (edge-triggered off eventSeq): fire each exactly once.
+    //     Clean delivery → hopeful bloom + push the end card. Collateral → dull puff. ---
+    if (sim.eventSeq > seenSeq.current && sim.lastEvent) {
+      seenSeq.current = sim.eventSeq;
+      const ev = sim.lastEvent;
+      if (ev.kind === 'delivered') {
+        bloomT.current = 0;
+        if (bloomRef.current) bloomRef.current.position.set(ev.pos.x, ev.pos.y, ev.pos.z);
+        // the score is revealed ONCE, here — never as a live counter.
+        useHud.getState().push({
+          delivered: true,
+          cleanliness: cleanliness(sim.targetDose, sim.healthyDose, DEFAULT_CONFIG.collateralWeight),
+          healthyDose: sim.healthyDose,
+        });
+      } else {
+        puffT.current = 0;
+        puffNearHealthy.current = ev.nearHealthy;
+        if (puffRef.current) {
+          puffRef.current.position.set(ev.pos.x, ev.pos.y, ev.pos.z);
+          // wilt is darker/more saturated when it grazes healthy tissue.
+          (puffRef.current.material as THREE.MeshStandardMaterial).color.set(
+            ev.nearHealthy ? '#5f4a5c' : '#857f90',
+          );
+        }
+      }
+    }
+
+    // --- clean-release bloom: a soft, hopeful pulse of delivery (NEVER a blast). ---
+    if (bloomRef.current) {
+      if (bloomT.current >= 0) {
+        bloomT.current += delta;
+        const u = bloomT.current / 1.5; // over ~1.5s
+        if (u >= 1) {
+          bloomT.current = -1;
+          bloomRef.current.visible = false;
+        } else {
+          bloomRef.current.visible = true;
+          const e = 1 - Math.pow(1 - u, 3); // ease-out expansion
+          bloomRef.current.scale.setScalar(0.3 + e * 3.0);
+          (bloomRef.current.material as THREE.MeshStandardMaterial).opacity =
+            0.55 * Math.sin(Math.PI * u); // fade in then out
+        }
+      } else {
+        bloomRef.current.visible = false;
+      }
+    }
+
+    // --- collateral puff: drug released in the WRONG place — dull, desaturated, recoils. ---
+    if (puffRef.current) {
+      if (puffT.current >= 0) {
+        puffT.current += delta;
+        const u = puffT.current / 1.2;
+        if (u >= 1) {
+          puffT.current = -1;
+          puffRef.current.visible = false;
+        } else {
+          puffRef.current.visible = true;
+          puffRef.current.scale.setScalar(0.4 + u * 1.3);
+          (puffRef.current.material as THREE.MeshStandardMaterial).opacity =
+            (puffNearHealthy.current ? 0.55 : 0.4) * Math.sin(Math.PI * u);
+        }
+      } else {
+        puffRef.current.visible = false;
+      }
+    }
+
     // --- magnet marker + ghost-pull line (legibility: blob ≠ finger-chaser) ---
     if (magnetRef.current) {
       const m = engine.magnetPos;
@@ -146,24 +239,34 @@ export function GameLoop() {
         : 0.15;
     }
 
-    // --- tumour target: arrhythmic throb (a motion tell distinct from healthy pulse) ---
+    // --- tumour target: arrhythmic throb (a motion tell distinct from healthy pulse).
+    //     After clean delivery it QUIETS and recedes — shrinks toward a small calm node
+    //     (tone guardrail: the tumour shrinks/quiets, it never explodes). ---
     if (targetRef.current) {
-      const t = sim.tSec;
-      const throb = 1 + 0.12 * (Math.sin(t * 5.0) + 0.6 * Math.sin(t * 8.3 + 1.7));
-      targetRef.current.scale.setScalar(throb);
+      if (sim.delivered) {
+        const cur = targetRef.current.scale.x;
+        const next = cur + (0.35 - cur) * (1 - Math.pow(0.02, delta));
+        targetRef.current.scale.setScalar(next);
+      } else {
+        const t = sim.tSec;
+        const throb = 1 + 0.12 * (Math.sin(t * 5.0) + 0.6 * Math.sin(t * 8.3 + 1.7));
+        targetRef.current.scale.setScalar(throb);
+      }
     }
 
     // --- blood cells drift downstream per-edge: the current you're fighting, made
     //     visible. Each edge carries its own Q and pulses on its own scale, so the
     //     trunk pounds and the tumour bed barely stirs. ---
     if (cellsRef.current) {
+      // after delivery the body quiets — the current all but stills ("cut to silence").
+      const flowDim = sim.delivered ? 0.15 : 1;
       for (let i = 0; i < cells.length; i++) {
         const c = cells[i];
         const edge = scenario.graph.edges[c.edgeId];
         const curve = curves[c.edgeId];
         const r = edge.radiusAt(c.s);
         const pf = pulseFactor(sim.tSec, DEFAULT_CONFIG, edge.pulseScale);
-        const speed = (Math.abs(edge.flowQ) / (Math.PI * r * r)) * pf;
+        const speed = (Math.abs(edge.flowQ) / (Math.PI * r * r)) * pf * flowDim;
         c.s += (Math.sign(edge.flowSign) * speed * delta) / edge.length;
         if (c.s > 1) c.s -= 1;
         if (c.s < 0) c.s += 1;
@@ -232,6 +335,44 @@ export function GameLoop() {
           transparent
           opacity={0.55}
           flatShading
+        />
+      </mesh>
+
+      {/* charge ring — drug "heat" building as you hold the tumour; hidden until charging */}
+      <mesh ref={chargeRingRef} visible={false}>
+        <torusGeometry args={[0.42, 0.05, 12, 32]} />
+        <meshStandardMaterial
+          color="#ffb24d"
+          emissive="#ff7a18"
+          emissiveIntensity={0.5}
+          transparent
+          opacity={0}
+          depthWrite={false}
+        />
+      </mesh>
+
+      {/* clean-release bloom — a soft, hopeful pulse of delivery (never a blast) */}
+      <mesh ref={bloomRef} visible={false}>
+        <sphereGeometry args={[1, 20, 20]} />
+        <meshStandardMaterial
+          color="#ffd9a0"
+          emissive="#ff9e3d"
+          emissiveIntensity={1.6}
+          transparent
+          opacity={0}
+          depthWrite={false}
+        />
+      </mesh>
+
+      {/* collateral dump — drug in the WRONG place: dull, desaturated, recoiling */}
+      <mesh ref={puffRef} visible={false}>
+        <sphereGeometry args={[1, 16, 16]} />
+        <meshStandardMaterial
+          color="#857f90"
+          transparent
+          opacity={0}
+          roughness={0.9}
+          depthWrite={false}
         />
       </mesh>
 
