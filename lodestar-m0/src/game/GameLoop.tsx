@@ -1,6 +1,6 @@
 // THE BRIDGE. One useFrame advances the pure sim with a fixed-timestep accumulator
 // and writes results straight into three objects via refs. No setState in here.
-// React only learns about the world through the low-freq HUD push (~10Hz).
+// React only learns about the world through the low-freq HUD push (~10Hz)
 
 import { useRef, useMemo, useCallback } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
