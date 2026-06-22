@@ -18,6 +18,7 @@ export interface SimState {
   blob: Blob;
   cfg: SimConfig;
   rngState: number; // advanced each step so noise is deterministic & replayable
+  tSec: number; // accumulated SIM time — drives the heartbeat. Never wall-clock (determinism).
   // cached read-model for renderer/HUD (updated every step)
   blobWorld: Vec3;
   flowSpeed: number;
@@ -28,14 +29,18 @@ export interface SimInput {
   magnetPos: Vec3; // where the player is pulling toward (already offset-corrected)
 }
 
-export function makeSimState(cfg: SimConfig = DEFAULT_CONFIG, seed = 1): SimState {
-  const graph = makeM0Graph();
+export function makeSimState(
+  cfg: SimConfig = DEFAULT_CONFIG,
+  graph: VesselGraph = makeM0Graph(),
+  seed = 1,
+): SimState {
   const blob = makeBlob(graph.inletEdge);
   return {
     graph,
     blob,
     cfg,
     rngState: seed >>> 0,
+    tSec: 0,
     blobWorld: edgePoint(graph.edges[graph.inletEdge], blob.s),
     flowSpeed: 0,
     upstreamProgress: 0,
@@ -52,12 +57,13 @@ export function step(state: SimState, input: SimInput): SimState {
   const rand = mulberry32(seed);
 
   const field: Field = { magnetPos: input.magnetPos };
-  const res: StepResult = integrate(state.graph, state.blob, field, state.cfg, rand);
+  const res: StepResult = integrate(state.graph, state.blob, field, state.cfg, state.tSec, rand);
 
   return {
     ...state,
     blob: res.blob,
     rngState: seed,
+    tSec: state.tSec + state.cfg.fixedDt,
     blobWorld: res.blobWorld,
     flowSpeed: res.flowSpeed,
     upstreamProgress: res.upstreamProgress,

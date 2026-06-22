@@ -8,13 +8,17 @@ import type { ThreeEvent } from '@react-three/fiber';
 import * as THREE from 'three';
 import { engine, useHud } from './engine';
 import { step } from '../sim/sim';
-import { makeM0Graph } from '../sim/vesselGraph';
+import { pulseFactor } from '../sim/flow';
 import { DEFAULT_CONFIG } from '../sim/config';
+import { breastTumourScenario } from '../scenarios/breastTumour';
 import { strain } from '../feel/haptics';
 import { VesselMesh } from '../render/VesselMesh';
 
-const CELL_COUNT = 700;
+const CELL_COUNT = 900;
 const MAGNET_LEAD = 1.1; // world units the magnet leads ABOVE the finger (anti-occlusion)
+
+const scenario = breastTumourScenario;
+const allEdges = Object.values(scenario.graph.edges);
 
 export function GameLoop() {
   const { camera } = useThree();
@@ -23,23 +27,38 @@ export function GameLoop() {
   const magnetRef = useRef<THREE.Group>(null!);
   const cellsRef = useRef<THREE.InstancedMesh>(null!);
   const ghostRef = useRef<THREE.Line>(null!);
+  const targetRef = useRef<THREE.Mesh>(null!);
 
-  // shared geometry for the centerline frame (cells + ghost line)
-  const curve = useMemo(() => {
-    const pts = makeM0Graph().edges.e0.controlPoints.map((p) => new THREE.Vector3(p.x, p.y, p.z));
-    return new THREE.CatmullRomCurve3(pts);
+  // one centerline curve per edge — cells drift along these.
+  const curves = useMemo(() => {
+    const m: Record<string, THREE.CatmullRomCurve3> = {};
+    for (const e of allEdges) {
+      m[e.id] = new THREE.CatmullRomCurve3(
+        e.controlPoints.map((p) => new THREE.Vector3(p.x, p.y, p.z)),
+      );
+    }
+    return m;
   }, []);
-  const edge = useMemo(() => makeM0Graph().edges.e0, []);
 
-  // per-cell drift state (deterministic-ish; cosmetic so Math.random is fine here)
+  // static world position of the tumour target (e4 @ s).
+  const targetPos = useMemo(() => {
+    const t = scenario.target;
+    return curves[t.edgeId].getPointAt(Math.min(0.999, Math.max(0.001, t.s)));
+  }, [curves]);
+
+  // per-cell drift state, spread across the whole tree (cosmetic → Math.random is fine).
   const cells = useMemo(
     () =>
-      Array.from({ length: CELL_COUNT }, () => ({
-        s: Math.random(),
-        ang: Math.random() * Math.PI * 2,
-        rad: 0.2 + Math.random() * 0.55,
-        size: 0.04 + Math.random() * 0.05,
-      })),
+      Array.from({ length: CELL_COUNT }, () => {
+        const edge = allEdges[Math.floor(Math.random() * allEdges.length)];
+        return {
+          edgeId: edge.id,
+          s: Math.random(),
+          ang: Math.random() * Math.PI * 2,
+          rad: 0.2 + Math.random() * 0.55,
+          size: 0.035 + Math.random() * 0.05,
+        };
+      }),
     [],
   );
 
@@ -127,17 +146,29 @@ export function GameLoop() {
         : 0.15;
     }
 
-    // --- blood cells drift downstream: the current you're fighting, made visible ---
+    // --- tumour target: arrhythmic throb (a motion tell distinct from healthy pulse) ---
+    if (targetRef.current) {
+      const t = sim.tSec;
+      const throb = 1 + 0.12 * (Math.sin(t * 5.0) + 0.6 * Math.sin(t * 8.3 + 1.7));
+      targetRef.current.scale.setScalar(throb);
+    }
+
+    // --- blood cells drift downstream per-edge: the current you're fighting, made
+    //     visible. Each edge carries its own Q and pulses on its own scale, so the
+    //     trunk pounds and the tumour bed barely stirs. ---
     if (cellsRef.current) {
-      const flowDir = Math.sign(DEFAULT_CONFIG.inletFlow) || 1;
       for (let i = 0; i < cells.length; i++) {
         const c = cells[i];
+        const edge = scenario.graph.edges[c.edgeId];
+        const curve = curves[c.edgeId];
         const r = edge.radiusAt(c.s);
-        const speed = DEFAULT_CONFIG.inletFlow / (Math.PI * r * r);
-        c.s += (speed * flowDir * delta) / edge.length;
+        const pf = pulseFactor(sim.tSec, DEFAULT_CONFIG, edge.pulseScale);
+        const speed = (Math.abs(edge.flowQ) / (Math.PI * r * r)) * pf;
+        c.s += (Math.sign(edge.flowSign) * speed * delta) / edge.length;
         if (c.s > 1) c.s -= 1;
         if (c.s < 0) c.s += 1;
-        const center = curve.getPointAt(Math.min(0.999, Math.max(0.001, c.s)));
+        const u = Math.min(0.999, Math.max(0.001, c.s));
+        const center = curve.getPointAt(u);
         const frame = frameAt(curve, c.s);
         const off = Math.min(c.rad, r - 0.06);
         dummy.position.set(
@@ -187,6 +218,20 @@ export function GameLoop() {
           emissive="#ff7a18"
           emissiveIntensity={1.4}
           roughness={0.3}
+        />
+      </mesh>
+
+      {/* the tumour target marker (release goal) */}
+      <mesh ref={targetRef} position={targetPos}>
+        <icosahedronGeometry args={[0.45, 1]} />
+        <meshStandardMaterial
+          color="#d65db1"
+          emissive="#a01a7d"
+          emissiveIntensity={0.7}
+          roughness={0.5}
+          transparent
+          opacity={0.55}
+          flatShading
         />
       </mesh>
 

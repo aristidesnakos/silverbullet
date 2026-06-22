@@ -8,8 +8,9 @@ export interface Blob {
   edgeId: string;
   s: number; // 0..1 along the current edge's centerline
   offset: Vec2; // radial position within the cross-section (clamped to radius)
+  pullMag: number; // applied magnet-pull magnitude, lagged toward target (the "grab")
 }
 
 export function makeBlob(edgeId: string, s = 0.08): Blob {
-  return { edgeId, s, offset: { x: 0, y: 0 } };
+  return { edgeId, s, offset: { x: 0, y: 0 }, pullMag: 0 };
 }

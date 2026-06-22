@@ -7,7 +7,10 @@ import { create } from 'zustand';
 import { makeSimState } from '../sim/sim';
 import type { SimState } from '../sim/sim';
 import { DEFAULT_CONFIG } from '../sim/config';
+import { breastTumourScenario } from '../scenarios/breastTumour';
 import type { Vec3 } from '../sim/vec';
+
+const scenario = breastTumourScenario;
 
 export interface Engine {
   sim: SimState;
@@ -18,13 +21,13 @@ export interface Engine {
 
 // module singleton — deliberately not in React state.
 export const engine: Engine = {
-  sim: makeSimState(DEFAULT_CONFIG),
-  magnetPos: { x: -8, y: 0, z: 0 },
+  sim: makeSimState(DEFAULT_CONFIG, scenario.graph),
+  magnetPos: { x: -7, y: 5, z: 0 }, // near the catheter drop-off on e0
   magnetActive: false,
 };
 
 export function resetEngine() {
-  engine.sim = makeSimState(DEFAULT_CONFIG);
+  engine.sim = makeSimState(DEFAULT_CONFIG, scenario.graph);
   engine.magnetActive = false;
 }
 
